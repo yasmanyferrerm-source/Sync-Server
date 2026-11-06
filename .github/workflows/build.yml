@@ -1,0 +1,51 @@
+name: Build Sync Server
+
+# Manual run (works with the Build Tool), plus on-demand from the Actions tab.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Read version from main.go
+        id: ver
+        run: echo "v=$(grep -oP 'const version = \"\K[0-9.]+' main.go)" >> "$GITHUB_OUTPUT"
+
+      - name: Build Windows executable
+        env:
+          GOOS: windows
+          GOARCH: amd64
+          CGO_ENABLED: '0'
+        run: |
+          go build -trimpath -ldflags "-s -w" -o "Warehouse Sync Server.exe" .
+          ls -la "Warehouse Sync Server.exe"
+
+      - name: Package zip
+        run: |
+          mkdir -p dist
+          cp "Warehouse Sync Server.exe" dist/
+          cd dist && zip "Warehouse-Sync-Server-${{ steps.ver.outputs.v }}.zip" "Warehouse Sync Server.exe"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: sync-v${{ steps.ver.outputs.v }}
+          name: Warehouse Sync Server v${{ steps.ver.outputs.v }}
+          body: |
+            Warehouse Sync Server v${{ steps.ver.outputs.v }}
+
+            Replace the running `Warehouse Sync Server.exe` with this one (keep the
+            existing `sync-data` folder next to it). Back up `sync-data` first.
+          files: |
+            Warehouse Sync Server.exe
+            dist/Warehouse-Sync-Server-${{ steps.ver.outputs.v }}.zip
