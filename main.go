@@ -83,20 +83,31 @@ func main() {
 	}
 	s.loadConfig()
 	s.loadDB()
+	acc.init(s.dir)
 	go s.saver()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/ping", s.cors(s.ping))
-	mux.HandleFunc("/api/state", s.cors(s.auth(s.state)))
-	mux.HandleFunc("/api/check", s.cors(s.auth(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/state", s.cors(s.auth(s.userGate(s.state))))
+	mux.HandleFunc("/api/check", s.cors(s.auth(s.userGate(func(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		writeJSON(w, 200, map[string]any{"ok": true, "rev": s.rev})
-	})))
-	mux.HandleFunc("/api/changes", s.cors(s.auth(s.changes)))
-	mux.HandleFunc("/api/push", s.cors(s.auth(s.push)))
-	mux.HandleFunc("/api/file", s.cors(s.auth(s.file)))
+	}))))
+	mux.HandleFunc("/api/changes", s.cors(s.auth(s.userGate(s.changes))))
+	mux.HandleFunc("/api/push", s.cors(s.auth(s.userGate(s.push))))
+	mux.HandleFunc("/api/file", s.cors(s.auth(s.userGate(s.file))))
 	mux.HandleFunc("/api/app-version", s.cors(s.appVersion))
+	// --- accounts (sign-in + roles). Opt-in: inert until an admin runs setup. ---
+	mux.HandleFunc("/api/auth/status", s.cors(s.auth(s.authStatus)))
+	mux.HandleFunc("/api/auth/setup", s.cors(s.auth(s.authSetup)))
+	mux.HandleFunc("/api/auth/login", s.cors(s.auth(s.authLogin)))
+	mux.HandleFunc("/api/auth/logout", s.cors(s.auth(s.authLogout)))
+	mux.HandleFunc("/api/auth/me", s.cors(s.auth(s.authMe)))
+	mux.HandleFunc("/api/auth/password", s.cors(s.auth(s.authPassword)))
+	mux.HandleFunc("/api/users", s.cors(s.auth(adminOnly(s.usersRoute))))
+	mux.HandleFunc("/api/users/update", s.cors(s.auth(adminOnly(s.usersUpdate))))
+	mux.HandleFunc("/api/company", s.cors(s.auth(adminOnly(s.companyUpdate))))
 	mux.HandleFunc("/app/", s.appFiles)
 	mux.HandleFunc("/m/index.html", s.cors(func(w http.ResponseWriter, r *http.Request) { // the phone app (for silent updates)
 		b, err := wwwFS.ReadFile("www/m/index.html")
@@ -435,7 +446,7 @@ func (s *server) maxNo(coll string) (int64, string, int) {
 func (s *server) cors(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Sync-Code, X-Sync-Device")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Sync-Code, X-Sync-Device, X-Sync-Token")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Private-Network", "true")
 		w.Header().Set("Cache-Control", "no-store")
@@ -481,14 +492,16 @@ func (s *server) ping(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) state(w http.ResponseWriter, r *http.Request) {
+	role := roleFor(r)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	writeJSON(w, 200, map[string]any{"rev": s.rev, "db": s.db})
+	writeJSON(w, 200, map[string]any{"rev": s.rev, "db": filterDBForRole(s.db, role)})
 }
 
 // changes since a revision: only the records that changed (or the whole database if the client is too far behind)
 func (s *server) changes(w http.ResponseWriter, r *http.Request) {
 	since, _ := strconv.ParseInt(r.URL.Query().Get("since"), 10, 64)
+	role := roleFor(r)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if since == s.rev {
@@ -496,7 +509,7 @@ func (s *server) changes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if since < s.logStart || since > s.rev {
-		writeJSON(w, 200, map[string]any{"rev": s.rev, "full": true, "db": s.db})
+		writeJSON(w, 200, map[string]any{"rev": s.rev, "full": true, "db": filterDBForRole(s.db, role)})
 		return
 	}
 	ups, dels, top := map[string][]any{}, map[string][]string{}, map[string]any{}
@@ -529,6 +542,7 @@ func (s *server) changes(w http.ResponseWriter, r *http.Request) {
 			next[k] = v
 		}
 	}
+	ups, dels = filterUpsForRole(ups, dels, role)
 	writeJSON(w, 200, map[string]any{"rev": s.rev, "ups": ups, "dels": dels, "top": top, "next": next})
 }
 
@@ -552,6 +566,7 @@ func (s *server) push(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "POST only", 405)
 		return
 	}
+	role := roleFor(r)
 	var req pushReq
 	dec := json.NewDecoder(io.LimitReader(r.Body, 200<<20))
 	if err := dec.Decode(&req); err != nil {
@@ -560,6 +575,9 @@ func (s *server) push(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if role == "warehouse" {
+		s.protectWarehousePush(&req)
+	}
 	// first device to connect to an empty server: its whole database becomes the shared data
 	if req.Seed {
 		if arrLen(s.db["items"]) > 0 || arrLen(s.db["tx"]) > 0 {
