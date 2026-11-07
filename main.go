@@ -32,7 +32,7 @@ import (
 	"time"
 )
 
-const version = "4.0.0"
+const version = "4.0.1"
 
 //go:embed www
 var wwwFS embed.FS
@@ -119,6 +119,7 @@ func main() {
 		w.Write(b)
 	}))
 	mux.HandleFunc("/status", s.status)
+	mux.HandleFunc("/status.json", s.statusJSON)
 	mux.HandleFunc("/phone", s.phonePage)
 	mux.HandleFunc("/api/scanners", s.cors(localOnly(s.auth(s.scanners))))
 	mux.HandleFunc("/api/scan", s.cors(localOnly(s.auth(s.scan))))
@@ -132,6 +133,8 @@ func main() {
 	}
 	banner(s)
 	go s.usbWatch()
+	// Open the live dashboard so the operator sees a real window, not the console.
+	go func() { time.Sleep(500 * time.Millisecond); openBrowser(fmt.Sprintf("http://localhost:%d/status", s.cfg.Port)) }()
 	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 20 * time.Second}
 	log.Fatal(srv.Serve(ln))
 }
@@ -156,6 +159,7 @@ func banner(s *server) {
 		fmt.Printf("       http://%s:%d\n", ip, s.cfg.Port)
 	}
 	fmt.Printf("   Address on this PC:   http://localhost:%d\n", s.cfg.Port)
+	fmt.Printf("\n   Live dashboard (opens automatically):  http://localhost:%d/status\n", s.cfg.Port)
 	if v, _, _ := mobileBuild(); v != "" {
 		fmt.Println("   Phone app version " + v + " — phones update to it automatically when they connect")
 		fmt.Println("   Install the phone app: open  <address above>/phone  in the phone's browser")
@@ -919,29 +923,7 @@ func (s *server) phonePage(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, `</body></html>`)
 }
 
-func (s *server) status(w http.ResponseWriter, r *http.Request) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprintf(w, "<html><body style='font-family:Segoe UI,Arial;padding:24px'><h2>Warehouse Sync Server %s</h2><p>Running on <b>%s</b> · revision %d · %d items · %d movements</p><h3>Devices seen</h3><ul>", version, s.cfg.Name, s.rev, arrLen(s.db["items"]), arrLen(s.db["tx"]))
-	names := make([]string, 0, len(s.devices))
-	for d := range s.devices {
-		names = append(names, d)
-	}
-	sort.Strings(names)
-	for _, d := range names {
-		fmt.Fprintf(w, "<li>%s — last seen %s</li>", htmlEsc(d), s.devices[d].Format("Jan 2 3:04:05 PM"))
-	}
-	fmt.Fprint(w, "</ul>")
-	if len(s.usbPhones) > 0 {
-		fmt.Fprint(w, "<h3>Phones linked by USB cable (this session)</h3><ul>")
-		for serial, m := range s.usbPhones {
-			fmt.Fprintf(w, "<li>%s <span style='color:#777'>(%s)</span></li>", htmlEsc(m), htmlEsc(serial))
-		}
-		fmt.Fprint(w, "</ul>")
-	}
-	fmt.Fprint(w, "</body></html>")
-}
+// status and statusJSON are defined in dashboard.go.
 
 func htmlEsc(s string) string {
 	return strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", `"`, "&quot;").Replace(s)
