@@ -32,7 +32,7 @@ import (
 	"time"
 )
 
-const version = "4.0.1"
+const version = "4.0.2"
 
 //go:embed www
 var wwwFS embed.FS
@@ -120,6 +120,7 @@ func main() {
 	}))
 	mux.HandleFunc("/status", s.status)
 	mux.HandleFunc("/status.json", s.statusJSON)
+	mux.HandleFunc("/api/shutdown", s.cors(s.shutdown))
 	mux.HandleFunc("/phone", s.phonePage)
 	mux.HandleFunc("/api/scanners", s.cors(localOnly(s.auth(s.scanners))))
 	mux.HandleFunc("/api/scan", s.cors(localOnly(s.auth(s.scan))))
@@ -140,9 +141,12 @@ func main() {
 }
 
 func fatal(msg string) {
+	// No console in the windowsgui build, so surface the error in a dialog and a log file.
 	fmt.Println("\n  ERROR: " + msg)
-	fmt.Println("\n  Press Enter to close.")
-	fmt.Scanln()
+	if wd, err := os.Getwd(); err == nil {
+		_ = os.WriteFile(filepath.Join(wd, "sync-server-error.log"), []byte(time.Now().Format(time.RFC3339)+"  "+msg+"\n"), 0o644)
+	}
+	showError("Warehouse Sync Server", msg)
 	os.Exit(1)
 }
 

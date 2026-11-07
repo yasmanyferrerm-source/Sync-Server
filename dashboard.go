@@ -1,12 +1,31 @@
 package main
 
 import (
+	"net"
 	"net/http"
+	"os"
 	"os/exec"
 	"runtime"
 	"sort"
 	"time"
 )
+
+// shutdown lets the operator stop the server from the dashboard (loopback only,
+// so only someone physically on the server PC can trigger it — never a LAN device).
+// Needed because the windowsgui build has no console window to close.
+func (s *server) shutdown(w http.ResponseWriter, r *http.Request) {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": "The server can only be stopped from the PC it runs on."})
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true})
+	// Give the background saver (runs every 500ms) time to flush any pending write.
+	go func() { time.Sleep(800 * time.Millisecond); os.Exit(0) }()
+}
 
 // statusJSON is the live data the dashboard polls every few seconds.
 func (s *server) statusJSON(w http.ResponseWriter, r *http.Request) {
@@ -155,6 +174,11 @@ const dashboardHTML = `<!doctype html>
   .foot b{color:var(--muted);font-weight:600}
   .off-banner{display:none;background:rgba(255,176,32,.12);border:1px solid rgba(255,176,32,.3);
     color:#ffd98a;border-radius:10px;padding:9px 13px;font-size:13px;margin-bottom:16px}
+  #stopBtn{margin-left:12px;background:rgba(232,106,98,.14);color:#ff9d96;border:1px solid rgba(232,106,98,.4);
+    border-radius:9px;padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer}
+  #stopBtn:hover{background:rgba(232,106,98,.24)}
+  .stopped{position:fixed;inset:0;background:rgba(8,12,24,.86);display:grid;place-items:center;z-index:99;
+    color:var(--muted);font-size:17px;text-align:center;padding:24px}
 </style></head>
 <body><div class="wrap">
   <header>
@@ -164,6 +188,7 @@ const dashboardHTML = `<!doctype html>
       <div class="sub" id="subtitle">Loading…</div>
     </div>
     <div class="live"><span class="dot" id="livedot"></span><span id="livetxt">live</span></div>
+    <button id="stopBtn" style="display:none">Stop server</button>
   </header>
 
   <div class="off-banner" id="offBanner">Can't reach the server — retrying…</div>
@@ -282,6 +307,21 @@ const dashboardHTML = `<!doctype html>
       document.getElementById('livetxt').textContent='live';
       render(s);
     }).catch(fail);
+  }
+  // The server can only be stopped from the PC it runs on, so only show the control there.
+  var onServer = ['localhost','127.0.0.1','::1','[::1]'].indexOf(location.hostname)>=0;
+  var stopBtn = document.getElementById('stopBtn');
+  if(onServer){
+    stopBtn.style.display='';
+    stopBtn.onclick=function(){
+      if(!confirm('Stop the Warehouse Sync Server?\n\nPhones and PCs will not be able to sync until it is started again.'))return;
+      stopBtn.disabled=true; stopBtn.textContent='Stopping…';
+      fetch('/api/shutdown',{method:'POST'}).catch(function(){}).then(function(){
+        var o=document.createElement('div'); o.className='stopped';
+        o.innerHTML='<div>Server stopped.<br><span style="font-size:14px">You can close this tab. Start it again by running the Warehouse Sync Server.</span></div>';
+        document.body.appendChild(o);
+      });
+    };
   }
   poll(); setInterval(poll,3000); setInterval(tick,1000);
 </script>
