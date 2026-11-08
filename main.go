@@ -32,7 +32,7 @@ import (
 	"time"
 )
 
-const version = "4.1.1"
+const version = "4.1.2"
 
 //go:embed www
 var wwwFS embed.FS
@@ -124,9 +124,12 @@ func main() {
 	mux.HandleFunc("/phone", s.phonePage)
 	mux.HandleFunc("/api/scanners", s.cors(localOnly(s.auth(s.scanners))))
 	mux.HandleFunc("/api/scan", s.cors(localOnly(s.auth(s.scan))))
-	mux.HandleFunc("/api/printers", s.cors(localOnly(s.auth(s.printers))))
-	mux.HandleFunc("/api/print", s.cors(localOnly(s.auth(s.print))))
-	mux.HandleFunc("/api/print-test", s.cors(s.printTest))
+	// Printing is allowed for any paired device, local or remote (via the tunnel),
+	// so phones and the managed Work PC can print from another network. The pairing
+	// code / sign-in is the security boundary, same as for syncing the data itself.
+	mux.HandleFunc("/api/printers", s.cors(s.auth(s.printers)))
+	mux.HandleFunc("/api/print", s.cors(s.auth(s.print)))
+	mux.HandleFunc("/api/print-test", s.cors(s.printTest)) // loopback-only: triggered from the dashboard on the server PC
 	sub, _ := fs.Sub(wwwFS, "www")
 	mux.Handle("/", http.FileServer(http.FS(sub)))
 
