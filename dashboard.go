@@ -83,6 +83,7 @@ func (s *server) statusJSON(w http.ResponseWriter, r *http.Request) {
 		"signin":       map[string]any{"configured": configured, "company": company, "admins": admins, "users": users},
 		"devices":      devs,
 		"usb":          phones,
+		"printers":     cachedPrinters(),
 	})
 }
 
@@ -177,6 +178,10 @@ const dashboardHTML = `<!doctype html>
   #stopBtn{margin-left:12px;background:rgba(232,106,98,.14);color:#ff9d96;border:1px solid rgba(232,106,98,.4);
     border-radius:9px;padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer}
   #stopBtn:hover{background:rgba(232,106,98,.24)}
+  .tbtn{margin-left:auto;background:var(--card2);color:#cfe0ff;border:1px solid var(--brd);border-radius:8px;
+    padding:5px 11px;font-size:12px;font-weight:600;cursor:pointer}
+  .tbtn:hover{background:rgba(91,140,255,.18)}
+  .tbtn:disabled{opacity:.6;cursor:default}
   .stopped{position:fixed;inset:0;background:rgba(8,12,24,.86);display:grid;place-items:center;z-index:99;
     color:var(--muted);font-size:17px;text-align:center;padding:24px}
 </style></head>
@@ -216,6 +221,12 @@ const dashboardHTML = `<!doctype html>
         <div id="signin"></div>
       </div>
     </div>
+  </div>
+
+  <div class="card" id="prnCard" style="margin-top:14px;display:none">
+    <h2>Shared printers</h2>
+    <div class="sub" style="margin-bottom:6px">Installed on this PC and available to every paired device over Wi-Fi.</div>
+    <div id="printers"></div>
   </div>
 
   <div class="card" id="usbCard" style="margin-top:14px;display:none">
@@ -288,6 +299,24 @@ const dashboardHTML = `<!doctype html>
         return '<div class="row"><span class="name">'+esc(u.model||u.serial)+'</span><span class="seen">'+esc(u.serial)+'</span></div>';
       }).join('');
     } else usbCard.style.display='none';
+
+    var prnCard=document.getElementById('prnCard');
+    if(s.printers && s.printers.length){
+      prnCard.style.display='';
+      document.getElementById('printers').innerHTML=s.printers.map(function(n){
+        return '<div class="row"><span class="name">'+esc(n)+'</span>'+
+          '<button class="tbtn" data-prn="'+encodeURIComponent(n)+'">Test print</button></div>';
+      }).join('');
+      Array.prototype.forEach.call(document.querySelectorAll('.tbtn'),function(btn){
+        btn.onclick=function(){
+          btn.disabled=true; var old=btn.textContent; btn.textContent='Printing…';
+          fetch('/api/print-test?printer='+btn.dataset.prn,{method:'POST'}).then(function(r){return r.json();}).then(function(j){
+            btn.textContent=(j&&j.ok)?'Sent ✓':'Failed'; if(j&&j.error)alert('Test print failed:\n'+j.error);
+            setTimeout(function(){btn.textContent=old;btn.disabled=false;},2500);
+          }).catch(function(){btn.textContent='Failed';setTimeout(function(){btn.textContent=old;btn.disabled=false;},2500);});
+        };
+      });
+    } else prnCard.style.display='none';
 
     document.getElementById('foot').innerHTML='<b>Data folder:</b> '+esc(s.dataDir)+
       '<br>Install the phone app: open <b>&lt;address above&gt;/phone</b> in the phone\'s browser. Keep this window — and the server — running.';

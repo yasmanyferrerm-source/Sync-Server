@@ -32,7 +32,7 @@ import (
 	"time"
 )
 
-const version = "4.0.2"
+const version = "4.1.0"
 
 //go:embed www
 var wwwFS embed.FS
@@ -124,6 +124,9 @@ func main() {
 	mux.HandleFunc("/phone", s.phonePage)
 	mux.HandleFunc("/api/scanners", s.cors(localOnly(s.auth(s.scanners))))
 	mux.HandleFunc("/api/scan", s.cors(localOnly(s.auth(s.scan))))
+	mux.HandleFunc("/api/printers", s.cors(localOnly(s.auth(s.printers))))
+	mux.HandleFunc("/api/print", s.cors(localOnly(s.auth(s.print))))
+	mux.HandleFunc("/api/print-test", s.cors(s.printTest))
 	sub, _ := fs.Sub(wwwFS, "www")
 	mux.Handle("/", http.FileServer(http.FS(sub)))
 
