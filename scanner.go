@@ -42,7 +42,9 @@ func localOnly(h http.HandlerFunc) http.HandlerFunc {
 
 func runPowerShell(args ...string) ([]byte, error) {
 	base := []string{"-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass"}
-	return exec.Command("powershell", append(base, args...)...).Output()
+	cmd := exec.Command("powershell", append(base, args...)...)
+	hideWindow(cmd)
+	return cmd.Output()
 }
 
 // GET /api/scanners — enumerate attached WIA scanners.
@@ -135,7 +137,9 @@ func (s *server) scan(w http.ResponseWriter, r *http.Request) {
 func (s *server) usbWatch() {
 	for {
 		m := map[string]string{}
-		if out, err := exec.Command("adb", "devices", "-l").Output(); err == nil {
+		adbCmd := exec.Command("adb", "devices", "-l")
+		hideWindow(adbCmd)
+		if out, err := adbCmd.Output(); err == nil {
 			for _, line := range strings.Split(string(out), "\n") {
 				line = strings.TrimSpace(line)
 				if line == "" || strings.HasPrefix(line, "List of devices") {

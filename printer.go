@@ -99,8 +99,10 @@ func (s *server) printTest(w http.ResponseWriter, r *http.Request) {
 	_ = os.WriteFile(ps1, []byte(testScript), 0o644)
 	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-		"-File", ps1, "-printer", printer).CombinedOutput()
+	testCmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+		"-File", ps1, "-printer", printer)
+	hideWindow(testCmd)
+	out, err := testCmd.CombinedOutput()
 	if err != nil {
 		msg := strings.TrimSpace(string(out))
 		if msg == "" {
@@ -222,6 +224,7 @@ func (s *server) print(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
 		"-File", ps1, "-list", listFile, "-printer", req.Printer, "-w", w100, "-h", h100)
+	hideWindow(cmd)
 	out, err := cmd.CombinedOutput()
 	if ctx.Err() == context.DeadlineExceeded {
 		writeJSON(w, 200, map[string]any{"error": "Printing timed out — check the printer is on, loaded and not jammed."})

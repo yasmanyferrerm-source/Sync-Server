@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"os"
@@ -9,6 +11,23 @@ import (
 	"sort"
 	"time"
 )
+
+// alreadyOurServer reports whether a Warehouse Sync Server is already listening on
+// the port (so a second launch can just open the dashboard instead of erroring).
+func alreadyOurServer(port int) bool {
+	c := &http.Client{Timeout: 1500 * time.Millisecond}
+	resp, err := c.Get(fmt.Sprintf("http://127.0.0.1:%d/status.json", port))
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	var m map[string]any
+	if json.NewDecoder(resp.Body).Decode(&m) != nil {
+		return false
+	}
+	_, ok := m["version"]
+	return ok
+}
 
 // shutdown lets the operator stop the server from the dashboard (loopback only,
 // so only someone physically on the server PC can trigger it — never a LAN device).
@@ -108,6 +127,7 @@ func openBrowser(url string) {
 	default:
 		cmd = exec.Command("xdg-open", url)
 	}
+	hideWindow(cmd)
 	_ = cmd.Start()
 }
 

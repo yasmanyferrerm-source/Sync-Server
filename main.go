@@ -32,7 +32,7 @@ import (
 	"time"
 )
 
-const version = "4.1.0"
+const version = "4.1.1"
 
 //go:embed www
 var wwwFS embed.FS
@@ -133,6 +133,12 @@ func main() {
 	addr := fmt.Sprintf(":%d", s.cfg.Port)
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
+		// Most likely our own server is already running (easy to miss with no console
+		// window). If so, just open its dashboard and exit quietly instead of alarming.
+		if alreadyOurServer(s.cfg.Port) {
+			openBrowser(fmt.Sprintf("http://localhost:%d/status", s.cfg.Port))
+			os.Exit(0)
+		}
 		fatal(fmt.Sprintf("Port %d is busy — is the sync server already running?\n%v", s.cfg.Port, err))
 	}
 	banner(s)
