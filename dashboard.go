@@ -149,13 +149,14 @@ const dashboardHTML = `<!doctype html>
     font-family:"Segoe UI",system-ui,-apple-system,Roboto,Arial,sans-serif;
     color:var(--ink); background:var(--bg); min-height:100vh; padding:28px 20px 48px;
   }
+  /* samurai dusk scene sits furthest back; a vignette on top keeps header/footer text readable */
+  .scene{position:fixed; inset:0; z-index:-2; overflow:hidden; background:var(--bg)}
+  .scene svg{position:absolute; inset:0; width:100%; height:100%}
   body::before{
-    content:""; position:fixed; inset:0; z-index:-1;
+    content:""; position:fixed; inset:0; z-index:-1; pointer-events:none;
     background:
-      radial-gradient(60vw 50vh at 12% -8%, rgba(91,140,255,.22), transparent 60%),
-      radial-gradient(55vw 45vh at 108% 4%, rgba(122,107,255,.20), transparent 55%),
-      radial-gradient(70vw 60vh at 50% 120%, rgba(57,217,138,.10), transparent 60%),
-      var(--bg);
+      radial-gradient(60vw 45vh at 12% -10%, rgba(91,140,255,.10), transparent 60%),
+      linear-gradient(180deg, rgba(5,8,16,.78) 0%, rgba(5,8,16,0) 24%, rgba(5,8,16,0) 66%, rgba(5,8,16,.62) 100%);
   }
   .wrap{max-width:1040px;margin:0 auto}
   header{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:22px}
@@ -205,7 +206,53 @@ const dashboardHTML = `<!doctype html>
   .stopped{position:fixed;inset:0;background:rgba(8,12,24,.86);display:grid;place-items:center;z-index:99;
     color:var(--muted);font-size:17px;text-align:center;padding:24px}
 </style></head>
-<body><div class="wrap">
+<body>
+<div class="scene" aria-hidden="true">
+<svg viewBox="0 0 1200 800" preserveAspectRatio="xMidYMid slice" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#090d18"/>
+      <stop offset="0.5" stop-color="#121a30"/>
+      <stop offset="0.78" stop-color="#2b1733"/>
+      <stop offset="1" stop-color="#3c1422"/>
+    </linearGradient>
+    <radialGradient id="sun" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#ffb199"/>
+      <stop offset="0.45" stop-color="#ff6b5a"/>
+      <stop offset="0.8" stop-color="#d8392b"/>
+      <stop offset="1" stop-color="#a51124"/>
+    </radialGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#ff6b5a" stop-opacity="0.45"/>
+      <stop offset="1" stop-color="#ff6b5a" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="1200" height="800" fill="url(#sky)"/>
+  <circle cx="824" cy="296" r="330" fill="url(#glow)"/>
+  <circle cx="824" cy="296" r="152" fill="url(#sun)"/>
+  <g fill="#121a30" opacity="0.55">
+    <rect x="588" y="250" width="472" height="13" rx="6"/>
+    <rect x="612" y="300" width="424" height="11" rx="5"/>
+    <rect x="596" y="344" width="456" height="9" rx="4"/>
+  </g>
+  <path d="M0 560 L180 470 L340 540 L520 450 L700 560 L900 468 L1100 560 L1200 520 L1200 800 L0 800 Z" fill="#0d1526"/>
+  <path d="M0 640 L220 560 L430 628 L650 548 L880 640 L1080 568 L1200 628 L1200 800 L0 800 Z" fill="#0a0f1f"/>
+  <path d="M0 718 L300 668 L600 714 L900 664 L1200 714 L1200 800 L0 800 Z" fill="#070b15"/>
+  <!-- lone samurai, backlit by the sun -->
+  <g fill="#05070e" stroke="#e0392b" stroke-opacity="0.22" stroke-width="1.5">
+    <ellipse cx="820" cy="709" rx="74" ry="9" stroke="none" opacity="0.55"/>
+    <circle cx="820" cy="462" r="19"/>
+    <circle cx="820" cy="440" r="7"/>
+    <path d="M786 500 Q786 487 800 485 L840 485 Q854 487 854 500 L863 570 L873 706 L767 706 L777 570 Z"/>
+    <path d="M851 503 L867 561 L858 567 L841 512 Z"/>
+    <path d="M789 503 L773 561 L782 567 L799 512 Z"/>
+    <rect x="864" y="545" width="7" height="23" rx="2" stroke="none"/>
+    <rect x="856" y="566" width="22" height="4" rx="2" stroke="none"/>
+    <path d="M866 573 L872 573 L907 701 L901 703 Z" stroke="none"/>
+  </g>
+</svg>
+</div>
+<div class="wrap">
   <header>
     <div class="logo">W</div>
     <div>
