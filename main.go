@@ -32,7 +32,7 @@ import (
 	"time"
 )
 
-const version = "4.1.2"
+const version = "4.2.0"
 
 //go:embed www
 var wwwFS embed.FS

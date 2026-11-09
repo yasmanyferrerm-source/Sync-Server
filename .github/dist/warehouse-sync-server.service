@@ -1,0 +1,16 @@
+[Unit]
+Description=Warehouse Sync Server
+After=network-online.target cups.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# EDIT these two lines to match your setup:
+User=CHANGE_ME
+WorkingDirectory=/opt/warehouse-sync-server
+ExecStart=/opt/warehouse-sync-server/warehouse-sync-server
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

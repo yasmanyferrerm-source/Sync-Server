@@ -36,6 +36,25 @@ jobs:
           cp "Warehouse Sync Server.exe" dist/
           cd dist && zip "Warehouse-Sync-Server-${{ steps.ver.outputs.v }}.zip" "Warehouse Sync Server.exe"
 
+      - name: Build Linux binary (amd64)
+        env:
+          GOOS: linux
+          GOARCH: amd64
+          CGO_ENABLED: '0'
+        run: |
+          go build -trimpath -ldflags "-s -w" -o warehouse-sync-server .
+          chmod +x warehouse-sync-server
+          ls -la warehouse-sync-server
+
+      - name: Package Linux tar.gz
+        run: |
+          pkg="warehouse-sync-server-${{ steps.ver.outputs.v }}-linux-amd64"
+          mkdir -p "dist/$pkg"
+          cp warehouse-sync-server "dist/$pkg/"
+          cp .github/dist/warehouse-sync-server.service "dist/$pkg/"
+          cp .github/dist/INSTALL-linux.md "dist/$pkg/"
+          cd dist && tar czf "$pkg.tar.gz" "$pkg"
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -44,8 +63,14 @@ jobs:
           body: |
             Warehouse Sync Server v${{ steps.ver.outputs.v }}
 
-            Replace the running `Warehouse Sync Server.exe` with this one (keep the
-            existing `sync-data` folder next to it). Back up `sync-data` first.
+            **Windows:** replace the running `Warehouse Sync Server.exe` with this one
+            (keep the existing `sync-data` folder next to it). Back up `sync-data` first.
+
+            **Linux (Ubuntu):** use `warehouse-sync-server` (or the
+            `...-linux-amd64.tar.gz`, which includes a systemd unit and INSTALL-linux.md).
+            Printing uses CUPS (`sudo apt install cups`).
           files: |
             Warehouse Sync Server.exe
             dist/Warehouse-Sync-Server-${{ steps.ver.outputs.v }}.zip
+            warehouse-sync-server
+            dist/warehouse-sync-server-${{ steps.ver.outputs.v }}-linux-amd64.tar.gz
