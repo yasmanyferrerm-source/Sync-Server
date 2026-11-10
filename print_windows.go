@@ -97,9 +97,27 @@ if($files.Count -eq 0){ Write-Error "no label images"; exit 3 }
 $pd = New-Object System.Drawing.Printing.PrintDocument
 $pd.PrinterSettings.PrinterName = $printer
 if(-not $pd.PrinterSettings.IsValid){ Write-Error ("Printer not found: " + $printer); exit 2 }
-try { $ps = New-Object System.Drawing.Printing.PaperSize("Label",$w,$h); $pd.DefaultPageSettings.PaperSize = $ps } catch {}
+# Documents (Letter-size pages) use one of the printer's own paper sizes, so an office printer
+# never falls back to a wrong or cropped custom size. Labels keep the exact custom size.
+$isDoc = ($w -ge 800 -and $h -ge 800)
+$matched = $false
+if($isDoc){
+  try {
+    $sw = [Math]::Min($w,$h); $sh = [Math]::Max($w,$h)
+    foreach($s in $pd.PrinterSettings.PaperSizes){
+      if([Math]::Abs($s.Width - $sw) -le 8 -and [Math]::Abs($s.Height - $sh) -le 8){
+        $pd.DefaultPageSettings.PaperSize = $s
+        $pd.DefaultPageSettings.Landscape = ($w -gt $h)
+        $matched = $true; break
+      }
+    }
+  } catch { $matched = $false }
+}
+if(-not $matched){ try { $ps = New-Object System.Drawing.Printing.PaperSize("Label",$w,$h); $pd.DefaultPageSettings.PaperSize = $ps } catch {} }
 $pd.DefaultPageSettings.Margins = New-Object System.Drawing.Printing.Margins(0,0,0,0)
-$pd.OriginAtMargins = $false
+# For documents, measure from the true paper edge (not the printer's unprintable margin) so the
+# page is not shifted right/down and clipped on the far side. Labels are unchanged.
+$pd.OriginAtMargins = [bool]$matched
 $script:i = 0
 $script:n = $files.Count
 $pd.add_PrintPage({ param($s,$e)
