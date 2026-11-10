@@ -119,6 +119,7 @@ func main() {
 		w.Write(b)
 	}))
 	mux.HandleFunc("/status", s.status)
+	mux.HandleFunc("/dash-bg.jpg", s.dashBGHandler)
 	mux.HandleFunc("/status.json", s.statusJSON)
 	mux.HandleFunc("/api/shutdown", s.cors(s.shutdown))
 	mux.HandleFunc("/phone", s.phonePage)
