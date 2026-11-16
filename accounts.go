@@ -38,8 +38,12 @@ type user struct {
 	Role     string `json:"role"` // admin | office | warehouse
 	Pass     string `json:"pass"` // pbkdf2$sha256$<iter>$<saltB64>$<hashB64>
 	Disabled bool   `json:"disabled"`
-	Created  int64  `json:"created"`
-	Updated  int64  `json:"updated"`
+	Email    string `json:"email,omitempty"`
+	// MustChange is set when an admin issues a temporary password: the user can sign in with it,
+	// but must choose their own password before any data is served.
+	MustChange bool  `json:"mustChange,omitempty"`
+	Created    int64 `json:"created"`
+	Updated    int64 `json:"updated"`
 }
 
 type session struct {
@@ -105,6 +109,13 @@ func (a *accountStore) findByName(username string) *user {
 	for _, usr := range a.Users {
 		if strings.ToLower(usr.Username) == u {
 			return usr
+		}
+	}
+	if strings.Contains(u, "@") { // sign in with the email address as well as the username
+		for _, usr := range a.Users {
+			if usr.Email != "" && strings.ToLower(usr.Email) == u {
+				return usr
+			}
 		}
 	}
 	return nil
@@ -256,7 +267,7 @@ func roleFor(r *http.Request) string {
 }
 
 func userPublic(u *user) map[string]any {
-	return map[string]any{"id": u.ID, "username": u.Username, "name": u.Name, "role": u.Role, "disabled": u.Disabled, "created": u.Created, "updated": u.Updated}
+	return map[string]any{"id": u.ID, "username": u.Username, "name": u.Name, "role": u.Role, "disabled": u.Disabled, "email": u.Email, "mustChange": u.MustChange, "created": u.Created, "updated": u.Updated}
 }
 
 // ---------------------------------------------------------------- handlers
@@ -360,10 +371,15 @@ func (s *server) authPassword(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]any{"error": "New password must be at least 6 characters"})
 		return
 	}
+	if req.New == req.Old {
+		writeJSON(w, 400, map[string]any{"error": "Choose a password that is different from the current one"})
+		return
+	}
 	u.Pass = hashPassword(req.New)
+	u.MustChange = false
 	u.Updated = time.Now().UnixMilli()
 	acc.save()
-	writeJSON(w, 200, map[string]any{"ok": true})
+	writeJSON(w, 200, map[string]any{"ok": true, "user": userPublic(u)})
 }
 
 // adminOnly wraps a handler so only a signed-in admin can reach it.
@@ -376,6 +392,14 @@ func adminOnly(h http.HandlerFunc) http.HandlerFunc {
 		}
 		if sess.Role != "admin" {
 			writeJSON(w, 403, map[string]any{"error": "Only an admin can manage users"})
+			return
+		}
+		acc.mu.Lock()
+		u := acc.findByID(sess.UID)
+		must := u != nil && u.MustChange
+		acc.mu.Unlock()
+		if must {
+			writeJSON(w, 403, map[string]any{"error": "Set your own password first", "mustChange": true})
 			return
 		}
 		h(w, r)
@@ -395,11 +419,22 @@ func (s *server) usersList(w http.ResponseWriter, r *http.Request) {
 
 // POST /api/users — create (admin).
 func (s *server) usersCreate(w http.ResponseWriter, r *http.Request) {
-	var req struct{ Username, Name, Role, Password string }
+	var req struct {
+		Username, Name, Role, Password, Email string
+		MustChange                            bool
+	}
 	if !decodeBody(w, r, &req) {
 		return
 	}
 	req.Username = strings.TrimSpace(req.Username)
+	req.Email = strings.TrimSpace(req.Email)
+	if req.Email != "" && !validEmail(req.Email) {
+		writeJSON(w, 400, map[string]any{"error": "That email address does not look right."})
+		return
+	}
+	if req.Username == "" {
+		req.Username = req.Email // added by email: the address is the sign-in name
+	}
 	if len(req.Username) < 2 || len(req.Password) < 6 {
 		writeJSON(w, 400, map[string]any{"error": "Enter a username and a password of at least 6 characters."})
 		return
@@ -414,8 +449,12 @@ func (s *server) usersCreate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 409, map[string]any{"error": "That username is already taken."})
 		return
 	}
+	if req.Email != "" && acc.findByName(req.Email) != nil {
+		writeJSON(w, 409, map[string]any{"error": "A user with that email already exists."})
+		return
+	}
 	now := time.Now().UnixMilli()
-	u := &user{ID: newID("u-"), Username: req.Username, Name: strings.TrimSpace(req.Name), Role: req.Role, Pass: hashPassword(req.Password), Created: now, Updated: now}
+	u := &user{ID: newID("u-"), Username: req.Username, Name: strings.TrimSpace(req.Name), Role: req.Role, Pass: hashPassword(req.Password), Email: req.Email, MustChange: req.MustChange, Created: now, Updated: now}
 	acc.Users = append(acc.Users, u)
 	acc.save()
 	writeJSON(w, 200, map[string]any{"user": userPublic(u)})
@@ -424,12 +463,14 @@ func (s *server) usersCreate(w http.ResponseWriter, r *http.Request) {
 // POST /api/users/update — change name/role/disabled/password, or delete (admin).
 func (s *server) usersUpdate(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		ID       string  `json:"id"`
-		Name     *string `json:"name"`
-		Role     *string `json:"role"`
-		Disabled *bool   `json:"disabled"`
-		Password *string `json:"password"`
-		Delete   bool    `json:"delete"`
+		ID         string  `json:"id"`
+		Name       *string `json:"name"`
+		Role       *string `json:"role"`
+		Disabled   *bool   `json:"disabled"`
+		Password   *string `json:"password"`
+		Email      *string `json:"email"`
+		MustChange *bool   `json:"mustChange"`
+		Delete     bool    `json:"delete"`
 	}
 	if !decodeBody(w, r, &req) {
 		return
@@ -480,6 +521,23 @@ func (s *server) usersUpdate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		u.Pass = hashPassword(*req.Password)
+	}
+	if req.Email != nil {
+		e := strings.TrimSpace(*req.Email)
+		if e != "" && !validEmail(e) {
+			writeJSON(w, 400, map[string]any{"error": "That email address does not look right."})
+			return
+		}
+		if e != "" {
+			if o := acc.findByName(e); o != nil && o.ID != u.ID {
+				writeJSON(w, 409, map[string]any{"error": "A user with that email already exists."})
+				return
+			}
+		}
+		u.Email = e
+	}
+	if req.MustChange != nil {
+		u.MustChange = *req.MustChange
 	}
 	u.Updated = time.Now().UnixMilli()
 	acc.save()
@@ -550,13 +608,32 @@ func intToStr(n int64) string {
 func (s *server) userGate(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if acc.configured() {
-			if _, ok := acc.sessionFor(r); !ok {
+			sess, ok := acc.sessionFor(r)
+			if !ok {
 				writeJSON(w, 401, map[string]any{"error": "Please sign in", "needLogin": true})
+				return
+			}
+			acc.mu.Lock()
+			u := acc.findByID(sess.UID)
+			must := u != nil && u.MustChange
+			acc.mu.Unlock()
+			if must { // a temporary password opens nothing but the change-password call
+				writeJSON(w, 403, map[string]any{"error": "Set your own password first", "mustChange": true})
 				return
 			}
 		}
 		h(w, r)
 	}
+}
+
+// validEmail is a light shape check — one @, something on both sides, a dot in the domain, no spaces.
+func validEmail(e string) bool {
+	at := strings.LastIndex(e, "@")
+	if at < 1 || at == len(e)-1 || strings.ContainsAny(e, " \t\r\n<>,;") || strings.Count(e, "@") != 1 {
+		return false
+	}
+	d := e[at+1:]
+	return strings.Contains(d, ".") && !strings.HasPrefix(d, ".") && !strings.HasSuffix(d, ".") && len(e) <= 254
 }
 
 // /api/users — GET lists users, POST creates one (both admin-only).
