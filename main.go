@@ -32,7 +32,7 @@ import (
 	"time"
 )
 
-const version = "4.4.0"
+const version = "4.5.0"
 
 //go:embed www
 var wwwFS embed.FS
@@ -41,6 +41,9 @@ type config struct {
 	Port int    `json:"port"`
 	Code string `json:"code"`
 	Name string `json:"name"`
+	// Hosted: this server holds companies for the store builds of the app. Signed-in devices
+	// don't need the pairing code, and new businesses can create a company. Off by default.
+	Hosted bool `json:"hosted"`
 }
 
 type logEntry struct {
@@ -62,6 +65,8 @@ type server struct {
 	dirty     bool
 	devices   map[string]time.Time
 	usbPhones map[string]string // phones linked through the USB cable: serial -> model
+	smu       sync.Mutex
+	stores    map[string]*server // other companies' data stores (tenant.go), by company id
 }
 
 // collections whose records get document numbers; colliding new numbers are renumbered
@@ -74,40 +79,78 @@ var docRx = regexp.MustCompile(`^([A-Za-z]+-?)(\d+)$`)
 func main() {
 	exe, _ := os.Executable()
 	base := filepath.Dir(exe)
-	if len(os.Args) > 1 && os.Args[1] == "--dir" && len(os.Args) > 2 {
-		base = os.Args[2]
+	resetWho := ""
+	for i := 1; i < len(os.Args); i++ {
+		switch os.Args[i] {
+		case "--dir":
+			if i+1 < len(os.Args) {
+				base = os.Args[i+1]
+				i++
+			}
+		case "--reset-password": // server owner: give a user (e.g. a locked-out admin) a temporary password
+			if i+1 < len(os.Args) {
+				resetWho = os.Args[i+1]
+				i++
+			}
+		}
 	}
-	s := &server{dir: filepath.Join(base, "sync-data"), devices: map[string]time.Time{}, usbPhones: map[string]string{}}
+	s := newServer(filepath.Join(base, "sync-data"))
 	if err := os.MkdirAll(filepath.Join(s.dir, "attachments"), 0o755); err != nil {
 		fatal("Cannot create the data folder: " + err.Error())
 	}
 	s.loadConfig()
+	if resetWho != "" {
+		ownerResetCLI(s, resetWho)
+		return
+	}
 	s.loadDB()
 	acc.init(s.dir)
 	go s.saver()
 
+	s.listen(s.routes())
+}
+
+func newServer(dir string) *server {
+	return &server{dir: dir, devices: map[string]time.Time{}, usbPhones: map[string]string{}, stores: map[string]*server{}}
+}
+
+// checkRev answers "has anything changed?" cheaply.
+func (s *server) checkRev(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	writeJSON(w, 200, map[string]any{"ok": true, "rev": s.rev})
+}
+
+// routes builds every endpoint. Data endpoints go through tenant(), which picks the
+// signed-in user's company store.
+func (s *server) routes() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/ping", s.cors(s.ping))
-	mux.HandleFunc("/api/state", s.cors(s.auth(s.userGate(s.state))))
-	mux.HandleFunc("/api/check", s.cors(s.auth(s.userGate(func(w http.ResponseWriter, r *http.Request) {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		writeJSON(w, 200, map[string]any{"ok": true, "rev": s.rev})
-	}))))
-	mux.HandleFunc("/api/changes", s.cors(s.auth(s.userGate(s.changes))))
-	mux.HandleFunc("/api/push", s.cors(s.auth(s.userGate(s.push))))
-	mux.HandleFunc("/api/file", s.cors(s.auth(s.userGate(s.file))))
+	mux.HandleFunc("/api/state", s.cors(s.auth(s.tenant(func(st *server) http.HandlerFunc { return st.state }))))
+	mux.HandleFunc("/api/check", s.cors(s.auth(s.tenant(func(st *server) http.HandlerFunc { return st.checkRev }))))
+	mux.HandleFunc("/api/changes", s.cors(s.auth(s.tenant(func(st *server) http.HandlerFunc { return st.changes }))))
+	mux.HandleFunc("/api/push", s.cors(s.auth(s.tenant(func(st *server) http.HandlerFunc { return st.push }))))
+	mux.HandleFunc("/api/file", s.cors(s.auth(s.tenant(func(st *server) http.HandlerFunc { return st.file }))))
 	mux.HandleFunc("/api/app-version", s.cors(s.appVersion))
 	// --- accounts (sign-in + roles). Opt-in: inert until an admin runs setup. ---
 	mux.HandleFunc("/api/auth/status", s.cors(s.auth(s.authStatus)))
 	mux.HandleFunc("/api/auth/setup", s.cors(s.auth(s.authSetup)))
+	mux.HandleFunc("/api/auth/create-company", s.cors(s.auth(s.authCreateCompany)))
 	mux.HandleFunc("/api/auth/login", s.cors(s.auth(s.authLogin)))
+	mux.HandleFunc("/api/auth/refresh", s.cors(s.auth(s.authRefresh)))
+	mux.HandleFunc("/api/auth/recover", s.cors(s.auth(s.authRecover)))
 	mux.HandleFunc("/api/auth/logout", s.cors(s.auth(s.authLogout)))
+	mux.HandleFunc("/api/auth/logout-all", s.cors(s.auth(s.authLogoutAll)))
 	mux.HandleFunc("/api/auth/me", s.cors(s.auth(s.authMe)))
 	mux.HandleFunc("/api/auth/password", s.cors(s.auth(s.authPassword)))
+	mux.HandleFunc("/api/auth/recovery-code", s.cors(s.auth(s.authRecoveryCode)))
 	mux.HandleFunc("/api/users", s.cors(s.auth(adminOnly(s.usersRoute))))
 	mux.HandleFunc("/api/users/update", s.cors(s.auth(adminOnly(s.usersUpdate))))
+	mux.HandleFunc("/api/users/transfer-admin", s.cors(s.auth(adminOnly(s.usersTransferAdmin))))
 	mux.HandleFunc("/api/company", s.cors(s.auth(adminOnly(s.companyUpdate))))
+	// --- server owner tools: only on the server PC itself (never through the tunnel), with the pairing code ---
+	mux.HandleFunc("/api/owner/companies", ownerOnly(s.auth(s.ownerCompanies)))
+	mux.HandleFunc("/api/owner/reset", ownerOnly(s.auth(s.ownerReset)))
 	mux.HandleFunc("/app/", s.appFiles)
 	mux.HandleFunc("/m/index.html", s.cors(func(w http.ResponseWriter, r *http.Request) { // the phone app (for silent updates)
 		b, err := wwwFS.ReadFile("www/m/index.html")
@@ -133,7 +176,10 @@ func main() {
 	mux.HandleFunc("/api/print-test", s.cors(s.printTest)) // loopback-only: triggered from the dashboard on the server PC
 	sub, _ := fs.Sub(wwwFS, "www")
 	mux.Handle("/", http.FileServer(http.FS(sub)))
+	return mux
+}
 
+func (s *server) listen(mux *http.ServeMux) {
 	addr := fmt.Sprintf(":%d", s.cfg.Port)
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -148,7 +194,10 @@ func main() {
 	banner(s)
 	go s.usbWatch()
 	// Open the live dashboard so the operator sees a real window, not the console.
-	go func() { time.Sleep(500 * time.Millisecond); openBrowser(fmt.Sprintf("http://localhost:%d/status", s.cfg.Port)) }()
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		openBrowser(fmt.Sprintf("http://localhost:%d/status", s.cfg.Port))
+	}()
 	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 20 * time.Second}
 	log.Fatal(srv.Serve(ln))
 }
@@ -485,7 +534,7 @@ func (s *server) auth(h http.HandlerFunc) http.HandlerFunc {
 		if code == "" {
 			code = r.URL.Query().Get("code")
 		}
-		if subtle.ConstantTimeCompare([]byte(code), []byte(s.cfg.Code)) != 1 {
+		if subtle.ConstantTimeCompare([]byte(code), []byte(s.cfg.Code)) != 1 && !s.hostedPass(r) {
 			time.Sleep(400 * time.Millisecond) // slow down guessing
 			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "Wrong pairing code"})
 			return

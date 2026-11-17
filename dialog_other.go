@@ -8,3 +8,6 @@ import "fmt"
 func showError(title, msg string) {
 	fmt.Println("\n  " + title + ": " + msg)
 }
+
+// showInfo is a no-op on non-Windows platforms: the message was already printed.
+func showInfo(title, msg string) {}

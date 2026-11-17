@@ -12,15 +12,9 @@ package main
 
 import "encoding/json"
 
-// whole collections a warehouse user cannot see or change
-var whHiddenColls = map[string]bool{
-	"expenses":       true,
-	"vendorInvoices": true,
-	"vendorinv":      true,
-}
-
-// cost fields stripped from every item for a warehouse user
-var whHiddenItemFields = []string{"cost", "avgCost", "lastCost", "stdCost", "landedCost", "margin", "unitCost"}
+// The rules themselves (which collections and fields) live in permissions.go.
+var whHiddenColls = hiddenCollsFor("warehouse")
+var whHiddenItemFields = itemCostFields
 
 func stripItemCost(rec map[string]any) {
 	for _, f := range whHiddenItemFields {
