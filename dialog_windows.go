@@ -17,3 +17,12 @@ func showError(title, msg string) {
 	m, _ := syscall.UTF16PtrFromString(msg)
 	mbox.Call(0, uintptr(unsafe.Pointer(m)), uintptr(unsafe.Pointer(t)), 0x10|0x40000)
 }
+
+// showInfo pops an information message box (0x40 = MB_ICONINFORMATION).
+func showInfo(title, msg string) {
+	user32 := syscall.NewLazyDLL("user32.dll")
+	mbox := user32.NewProc("MessageBoxW")
+	t, _ := syscall.UTF16PtrFromString(title)
+	m, _ := syscall.UTF16PtrFromString(msg)
+	mbox.Call(0, uintptr(unsafe.Pointer(m)), uintptr(unsafe.Pointer(t)), 0x40|0x40000)
+}

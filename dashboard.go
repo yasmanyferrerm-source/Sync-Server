@@ -80,17 +80,36 @@ func (s *server) statusJSON(w http.ResponseWriter, r *http.Request) {
 	}
 	users := make([]usr, 0, len(acc.Users))
 	admins := 0
+	dc := acc.defaultCompany()
 	for _, u := range acc.Users {
+		if dc != nil && u.CompanyID != dc.ID {
+			continue // the dashboard lists the server's own company; other companies are under Owner tools
+		}
 		users = append(users, usr{u.Name, u.Role, u.Disabled})
 		if u.Role == "admin" && !u.Disabled {
 			admins++
 		}
 	}
 	configured := len(acc.Users) > 0
-	company := acc.Company
+	company := companyPublic(dc)
+	others := 0
+	for _, c := range acc.Companies {
+		if !c.Default {
+			others++
+		}
+	}
 	acc.mu.Unlock()
 
+	// The pairing code and the user list are for the server PC and the local network only —
+	// never for someone who reached this page through the Cloudflare Tunnel.
+	if !trustedNet(r) {
+		writeJSON(w, 200, map[string]any{"name": s.cfg.Name, "version": version, "port": s.cfg.Port, "nowMs": now.UnixMilli(), "limited": true})
+		return
+	}
 	writeJSON(w, 200, map[string]any{
+		"onServer":     onServerPC(r),
+		"hosted":       s.cfg.Hosted,
+		"companies":    others,
 		"name":         s.cfg.Name,
 		"version":      version,
 		"port":         s.cfg.Port,
@@ -105,6 +124,23 @@ func (s *server) statusJSON(w http.ResponseWriter, r *http.Request) {
 		"usb":          phones,
 		"printers":     cachedPrinters(),
 	})
+}
+
+// trustedNet: the server PC, the local network or Tailscale — and not forwarded by a proxy.
+func trustedNet(r *http.Request) bool {
+	if proxied(r) {
+		return false
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	_, cgnat, _ := net.ParseCIDR("100.64.0.0/10") // Tailscale addresses
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || cgnat.Contains(ip)
 }
 
 // status serves the dashboard shell (a single self-contained page, no external
@@ -289,6 +325,12 @@ const dashboardHTML = `<!doctype html>
     </div>
   </div>
 
+  <div class="card" id="ownCard" style="margin-top:14px;display:none">
+    <h2>Owner tools</h2>
+    <div class="sub" style="margin-bottom:6px">Only on this PC. Give anyone a temporary password, for example an administrator who lost their password and recovery code. They choose a new one when they sign in, and all their devices are signed out.</div>
+    <div id="owner"></div>
+  </div>
+
   <div class="card" id="prnCard" style="margin-top:14px;display:none">
     <h2>Shared printers</h2>
     <div class="sub" style="margin-bottom:6px">Installed on this PC and available to every paired device over Wi-Fi.</div>
@@ -314,6 +356,7 @@ const dashboardHTML = `<!doctype html>
     if(d<86400)return Math.floor(d/3600)+'h ago';
     return Math.floor(d/86400)+'d ago';
   }
+  function escA(s){return esc(s).replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
   function roleLabel(r){return r==='admin'?'Admin':r==='office'?'Office':r==='warehouse'?'Warehouse':esc(r);}
 
   function render(s){
@@ -323,6 +366,11 @@ const dashboardHTML = `<!doctype html>
     var company = (co && (co.name || co.company)) ? (co.name || co.company) : '';
     document.getElementById('title').textContent = company || s.name || 'Warehouse Sync Server';
     document.getElementById('subtitle').textContent = 'v'+s.version+(s.phoneVersion?('  ·  phone app '+s.phoneVersion):'');
+    if(s.limited){ // reached through the internet: no pairing code, users or devices here
+      Array.prototype.forEach.call(document.querySelectorAll('.grid'),function(g){g.style.display='none';});
+      document.getElementById('foot').innerHTML='This dashboard shows details only on the server PC and the local network.';
+      return;
+    }
 
     var online = (s.devices||[]).filter(function(d){return d.online}).length;
     document.getElementById('tConn').innerHTML = online+' <small>/ '+(s.devices||[]).length+' total</small>';
@@ -358,6 +406,8 @@ const dashboardHTML = `<!doctype html>
         'Turn it on in the app: Settings → Set up sign-in.</div>';
     }
 
+    renderOwner(s);
+
     var usbCard=document.getElementById('usbCard');
     if(s.usb && s.usb.length){
       usbCard.style.display='';
@@ -386,6 +436,38 @@ const dashboardHTML = `<!doctype html>
 
     document.getElementById('foot').innerHTML='<b>Data folder:</b> '+esc(s.dataDir)+
       '<br>Install the phone app: open <b>&lt;address above&gt;/phone</b> in the phone\'s browser. Keep this window — and the server — running.';
+  }
+
+  var ownLast=0;
+  function renderOwner(s){
+    var card=document.getElementById('ownCard');
+    if(!s.onServer || !(s.signin && s.signin.configured)){ card.style.display='none'; return; }
+    card.style.display='';
+    if(Date.now()-ownLast<30000) return; ownLast=Date.now();
+    fetch('/api/owner/companies',{cache:'no-store',headers:{'X-Sync-Code':s.code}}).then(function(r){return r.json();}).then(function(j){
+      var html=(j.companies||[]).map(function(c){
+        return '<div style="margin:8px 0 4px"><b>'+esc(c.name||'(no name)')+'</b>'+(c.default?' <span class="pill role">this server\'s company</span>':'')+'</div>'+
+          (c.users||[]).map(function(u){
+            return '<div class="row"><span class="name">'+esc(u.name||u.username)+' <span class="seen">'+esc(u.email||u.username)+'</span></span>'+
+              '<span class="pill role">'+roleLabel(u.role)+'</span>'+
+              '<button class="tbtn obtn" data-uid="'+escA(u.id)+'" data-who="'+escA(u.name||u.username)+'">Reset password</button></div>';
+          }).join('');
+      }).join('');
+      if(j.hosted) html='<div class="sub">Hosted mode is on: new businesses can create a company on this server.</div>'+html;
+      document.getElementById('owner').innerHTML=html||'<div class="empty">No companies yet.</div>';
+      Array.prototype.forEach.call(document.querySelectorAll('.obtn'),function(b){
+        b.onclick=function(){
+          if(!confirm('Give '+b.dataset.who+' a temporary password?\n\nTheir current password stops working and they are signed out on every device.'))return;
+          b.disabled=true;
+          fetch('/api/owner/reset',{method:'POST',headers:{'X-Sync-Code':s.code,'Content-Type':'application/json'},body:JSON.stringify({user:b.dataset.uid})})
+            .then(function(r){return r.json();}).then(function(x){
+              b.disabled=false;
+              if(x.tempPassword) prompt('Temporary password for '+b.dataset.who+' (shown once — copy it now):',x.tempPassword);
+              else alert('Could not reset: '+(x.error||'unknown error'));
+            }).catch(function(){b.disabled=false;alert('Could not reach the server.');});
+        };
+      });
+    }).catch(function(){});
   }
 
   function tick(){ // keep "x ago" fresh between fetches
