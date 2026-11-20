@@ -32,7 +32,7 @@ import (
 	"time"
 )
 
-const version = "4.4.0"
+const version = "4.4.1"
 
 //go:embed www
 var wwwFS embed.FS
@@ -77,6 +77,8 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "--dir" && len(os.Args) > 2 {
 		base = os.Args[2]
 	}
+	logPath = filepath.Join(base, "sync-server.log")
+	slog("---- starting Warehouse Sync Server v%s (PID %d) %s", version, os.Getpid(), uptimeNote())
 	s := &server{dir: filepath.Join(base, "sync-data"), devices: map[string]time.Time{}, usbPhones: map[string]string{}}
 	if err := os.MkdirAll(filepath.Join(s.dir, "attachments"), 0o755); err != nil {
 		fatal("Cannot create the data folder: " + err.Error())
@@ -84,6 +86,7 @@ func main() {
 	s.loadConfig()
 	s.loadDB()
 	acc.init(s.dir)
+	slog("data loaded: %d items, revision %d", arrLen(s.db["items"]), s.rev)
 	go s.saver()
 
 	mux := http.NewServeMux()
@@ -134,26 +137,35 @@ func main() {
 	sub, _ := fs.Sub(wwwFS, "www")
 	mux.Handle("/", http.FileServer(http.FS(sub)))
 
-	addr := fmt.Sprintf(":%d", s.cfg.Port)
-	ln, err := net.Listen("tcp", addr)
+	// Bind the port. A healthy copy already running -> open its dashboard and exit;
+	// a frozen copy holding the port -> end it and take over (no more Task Manager).
+	ln, err := listenWithRecovery(s.cfg.Port)
 	if err != nil {
-		// Most likely our own server is already running (easy to miss with no console
-		// window). If so, just open its dashboard and exit quietly instead of alarming.
-		if alreadyOurServer(s.cfg.Port) {
-			openBrowser(fmt.Sprintf("http://localhost:%d/status", s.cfg.Port))
-			os.Exit(0)
-		}
-		fatal(fmt.Sprintf("Port %d is busy — is the sync server already running?\n%v", s.cfg.Port, err))
+		fatal(fmt.Sprintf("Port %d is busy and the program using it is not the sync server.\n%v", s.cfg.Port, err))
 	}
+	slog("listening on port %d", s.cfg.Port)
 	banner(s)
 	go s.usbWatch()
 	// Open the live dashboard so the operator sees a real window, not the console.
-	go func() { time.Sleep(500 * time.Millisecond); openBrowser(fmt.Sprintf("http://localhost:%d/status", s.cfg.Port)) }()
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		openBrowser(fmt.Sprintf("http://localhost:%d/status", s.cfg.Port))
+	}()
 	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 20 * time.Second}
-	log.Fatal(srv.Serve(ln))
+	go s.watchdog(srv)
+	if debugAfterStart != nil {
+		debugAfterStart(s)
+	}
+	err = srv.Serve(ln)
+	if err == http.ErrServerClosed {
+		select {} // restartSelf closed the listener and is about to start the new copy and exit
+	}
+	slog("server stopped: %v", err)
+	log.Fatal(err)
 }
 
 func fatal(msg string) {
+	slog("ERROR: %s", strings.ReplaceAll(msg, "\n", " | "))
 	// No console in the windowsgui build, so surface the error in a dialog and a log file.
 	fmt.Println("\n  ERROR: " + msg)
 	if wd, err := os.Getwd(); err == nil {

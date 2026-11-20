@@ -11,6 +11,7 @@ package main
 // ---------------------------------------------------------------------------
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"net"
@@ -42,8 +43,18 @@ func localOnly(h http.HandlerFunc) http.HandlerFunc {
 
 func runPowerShell(args ...string) ([]byte, error) {
 	base := []string{"-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass"}
-	cmd := exec.Command("powershell", append(base, args...)...)
+	return runQuiet(10*time.Minute, "powershell", append(base, args...)...) // a multi-page feeder scan can take minutes
+}
+
+// runQuiet runs a helper program with no window and a time limit. WaitDelay stops Output()
+// from waiting forever on a program that leaves a background child holding its output open —
+// exactly what "adb devices" does the first time after a reboot, when it starts the adb daemon.
+func runQuiet(limit time.Duration, name string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), limit)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
 	hideWindow(cmd)
+	cmd.WaitDelay = 3 * time.Second
 	return cmd.Output()
 }
 
@@ -137,9 +148,7 @@ func (s *server) scan(w http.ResponseWriter, r *http.Request) {
 func (s *server) usbWatch() {
 	for {
 		m := map[string]string{}
-		adbCmd := exec.Command("adb", "devices", "-l")
-		hideWindow(adbCmd)
-		if out, err := adbCmd.Output(); err == nil {
+		if out, err := runQuiet(20*time.Second, "adb", "devices", "-l"); err == nil {
 			for _, line := range strings.Split(string(out), "\n") {
 				line = strings.TrimSpace(line)
 				if line == "" || strings.HasPrefix(line, "List of devices") {
